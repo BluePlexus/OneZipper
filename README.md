@@ -20,6 +20,17 @@ cargo build --release
 
 The binary lands at `target/release/onezipper`.
 
+## Tests
+
+```bash
+cargo test
+```
+
+The suite drives the real binary against throwaway trees in temp directories — nothing it does can
+reach a path you care about. It covers the full round trip (extract and compare against a pre-run
+snapshot), appending across waves, every refusal case, and the delete-safety guarantees. Please add
+a test alongside any behavior change; `tests/common/mod.rs` has the fixture helpers.
+
 ## Usage
 
 ```

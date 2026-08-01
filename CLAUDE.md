@@ -147,9 +147,39 @@ failing the archive.
 
 ## Testing
 
-There is no automated suite yet. Any test that exercises `-zip` must build its own fixture tree in
-a temp directory and assert on a full round-trip: extract the archive and compare checksums against
-a pre-run snapshot, then confirm the originals are gone. Cases that have caught real bugs are
-DST-straddling mtimes, an unreadable file mid-archive, a two-wave append, a name collision on
-append, a byte flipped inside an archive's compressed data (which a header-only check misses), and
-an unmarked `<folder>.zip` that must be archived as content rather than appended to.
+```bash
+cargo test                       # whole suite, ~40 tests
+cargo test --test archive        # one file
+cargo test round_trip            # one test by name
+```
+
+`tests/` drives the real binary via `CARGO_BIN_EXE_onezipper`; there is no library target to unit
+test against, and end-to-end is the right altitude for a tool whose contract is "what it does to a
+directory". Files are grouped by concern: `selection` (which folders qualify, CLI surface),
+`archive` (archiving, appending, delete-safety), `workflow` (`-list`/`-ignore`), `timestamps`.
+
+`tests/common/mod.rs` holds the `Tree` fixture. Every test builds its own tree in a `TempDir`, so
+tests are parallel-safe and nothing can touch a real path. Two traps it already guards:
+
+- `Tree::path` rejects absolute inputs, because `Path::join` with an absolute argument discards the
+  root and would send a test writing outside its temp dir.
+- `Tree::root` is **canonicalized**. OneZipper canonicalizes its path argument, so on macOS it
+  reports `/private/var/…` where the `TempDir` is `/var/…`, and comparing output against a raw temp
+  path never matches.
+
+New tests belong in the file matching their concern, and should assert on observable behavior —
+exit code, stdout/stderr, what is on disk, what is inside the archive — not on internals.
+
+### What the suite is known to catch
+
+Verified by mutation: an inclusive threshold (`>` → `>=`), dropping `reject_collisions`, treating any
+`<folder>.zip` as ours (dropping the marker check), and removing `verify_archive` entirely are each
+caught by at least one test.
+
+**One known blind spot.** The explicit `hasher.finalize() != expected.crc` comparison in
+`verify_archive` cannot be killed by a black-box test: the `zip` crate's reader wraps entries in a
+`Crc32Reader` that validates against the archive's own stored CRC and errors first, so corrupt data
+never reaches our comparison. The line is *not* dead code and must stay — it checks the data against
+the CRC computed from the **source file**, which is a different claim from the archive being
+internally self-consistent, and it keeps the guarantee independent of the crate's internals. It is
+simply not independently observable from outside the binary.
