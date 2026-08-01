@@ -70,6 +70,17 @@ Then apply:
 onezipper ~/OneDrive -n 50 -zip
 ```
 
+A long run shows live progress — how many folders are done, which one is being archived, and how
+far into it OneZipper is:
+
+```
+⠲ [00:00:04] [====================>   ] 5/6 folders  photos (1432/1500 files)
+```
+
+The bar draws to stderr and only when stderr is a terminal, so redirecting or piping turns it off
+completely. `-list > keep.txt`, `-zip > log.txt`, and scripted runs are never polluted with bar
+frames or escape codes. Warnings and skipped folders print above the bar as they happen.
+
 ## Pause syncing before you run `-zip`
 
 **Quit or pause the OneDrive client first, and let it finish what it's doing.** This is the single

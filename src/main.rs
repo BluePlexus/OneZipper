@@ -6,10 +6,11 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -244,6 +245,91 @@ fn read_ignore_file(path: &Path) -> Result<HashSet<PathBuf>, String> {
     Ok(ignored)
 }
 
+/// Live progress for `-zip`, which can otherwise sit silent for a long time on
+/// a big tree.
+///
+/// The bar draws to **stderr** and only when stderr is a terminal. Redirecting
+/// or piping — which includes every test and any `> log.txt` — disables it
+/// entirely, so machine-readable output is never polluted with bar frames or
+/// escape codes. When disabled, `note` still reports through plain `eprintln!`,
+/// so nothing is lost, only the animation.
+struct Progress {
+    bar: Option<ProgressBar>,
+    /// The folder currently being archived, shown relative to the scan root.
+    /// Held here so the per-file update does not have to be threaded the path.
+    label: std::cell::RefCell<String>,
+}
+
+impl Progress {
+    fn new(folders: usize) -> Self {
+        let label = std::cell::RefCell::new(String::new());
+        if !io::stderr().is_terminal() || folders == 0 {
+            return Progress { bar: None, label };
+        }
+        let bar = ProgressBar::new(folders as u64);
+        bar.set_style(
+            // `wide_msg` truncates to the terminal width, so a deep path cannot
+            // wrap the bar onto a second line and leave debris on screen.
+            ProgressStyle::with_template(
+                "{spinner} [{elapsed_precise}] [{bar:24}] {pos}/{len} folders  {wide_msg}",
+            )
+            .expect("progress template is valid")
+            .progress_chars("=> "),
+        );
+        bar.enable_steady_tick(std::time::Duration::from_millis(120));
+        Progress {
+            bar: Some(bar),
+            label,
+        }
+    }
+
+    /// Names the folder now being archived, relative to the scan root so the
+    /// line stays readable on a deep tree.
+    fn start_folder(&self, dir: &Path, root: &Path) {
+        let shown = dir.strip_prefix(root).unwrap_or(dir);
+        let shown = if shown.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            shown.display().to_string()
+        };
+        *self.label.borrow_mut() = shown.clone();
+        if let Some(bar) = &self.bar {
+            bar.set_message(shown);
+        }
+    }
+
+    /// Shows movement inside a folder large enough that the folder count alone
+    /// would appear frozen.
+    fn file_progress(&self, done: usize, total: usize) {
+        if let Some(bar) = &self.bar
+            && total > 50
+        {
+            bar.set_message(format!("{} ({done}/{total} files)", self.label.borrow()));
+        }
+    }
+
+    fn folder_done(&self) {
+        if let Some(bar) = &self.bar {
+            bar.inc(1);
+        }
+    }
+
+    /// Emits a line without the bar overwriting it.
+    fn note(&self, message: &str) {
+        match &self.bar {
+            Some(bar) => bar.println(message),
+            None => eprintln!("{message}"),
+        }
+    }
+
+    /// Clears the bar so it cannot land in the middle of the summary.
+    fn finish(&self) {
+        if let Some(bar) = &self.bar {
+            bar.finish_and_clear();
+        }
+    }
+}
+
 /// Hidden and OS-generated entries are left alone by default: sweeping a `.git`
 /// directory into an archive and deleting the originals would break the
 /// repository, and `.DS_Store` / `Thumbs.db` are regenerated anyway.
@@ -391,18 +477,23 @@ fn run_zip(candidates: &[Candidate], cfg: &Config, ignored_count: usize) -> Exit
     let mut archived_files = 0usize;
     let mut failures = 0usize;
 
+    let progress = Progress::new(candidates.len());
     for candidate in candidates {
-        match zip_folder(candidate, cfg.store) {
+        progress.start_folder(&candidate.dir, &cfg.root);
+        match zip_folder(candidate, cfg.store, &progress) {
             Ok(count) => {
                 archived_folders += 1;
                 archived_files += count;
             }
             Err(e) => {
                 failures += 1;
-                eprintln!("skipped {}: {e}", candidate.dir.display());
+                progress.note(&format!("skipped {}: {e}", candidate.dir.display()));
             }
         }
+        progress.folder_done();
     }
+    // Clear the bar before the summary, so it cannot be left mid-line.
+    progress.finish();
 
     println!(
         "Archived {archived_files} file(s) into {archived_folders} zip(s){}.",
@@ -426,7 +517,7 @@ fn run_zip(candidates: &[Candidate], cfg: &Config, ignored_count: usize) -> Exit
 /// When `<name>.zip` already exists — a folder that has gained new files since
 /// an earlier run — the new files are appended to it, unless any of them would
 /// collide with a name already inside, in which case the folder is refused.
-fn zip_folder(candidate: &Candidate, store: bool) -> Result<usize, String> {
+fn zip_folder(candidate: &Candidate, store: bool, progress: &Progress) -> Result<usize, String> {
     let dir = &candidate.dir;
     let folder_name = dir
         .file_name()
@@ -443,7 +534,7 @@ fn zip_folder(candidate: &Candidate, store: bool) -> Result<usize, String> {
         ));
     }
 
-    let sources = usable_sources(&candidate.files)?;
+    let sources = usable_sources(&candidate.files, progress)?;
     if sources.is_empty() {
         return Err("no archivable files remain in this folder".to_string());
     }
@@ -471,7 +562,7 @@ fn zip_folder(candidate: &Candidate, store: bool) -> Result<usize, String> {
         Vec::new()
     };
 
-    let written = match build_archive(&part_path, &sources, store, appending) {
+    let written = match build_archive(&part_path, &sources, store, appending, progress) {
         Ok(written) => written,
         Err(e) => {
             let _ = fs::remove_file(&part_path);
@@ -505,10 +596,10 @@ fn zip_folder(candidate: &Candidate, store: bool) -> Result<usize, String> {
         }
         match fs::remove_file(path) {
             Ok(()) => removed += 1,
-            Err(e) => eprintln!(
+            Err(e) => progress.note(&format!(
                 "warning: archived but could not delete {}: {e}",
                 path.display()
-            ),
+            )),
         }
     }
     Ok(removed)
@@ -577,7 +668,10 @@ fn reject_collisions(
 
 /// Pairs each source path with the zip entry name it will get, rejecting names
 /// that cannot round-trip through the archive rather than mangling them.
-fn usable_sources(files: &[PathBuf]) -> Result<Vec<(PathBuf, String)>, String> {
+fn usable_sources(
+    files: &[PathBuf],
+    progress: &Progress,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let mut sources = Vec::new();
     for path in files {
         let raw = path
@@ -588,10 +682,10 @@ fn usable_sources(files: &[PathBuf]) -> Result<Vec<(PathBuf, String)>, String> {
             None => {
                 // A lossy name could collide with another entry or restore under
                 // the wrong name, so leave the file on disk untouched.
-                eprintln!(
+                progress.note(&format!(
                     "warning: leaving {} in place (file name is not valid UTF-8)",
                     path.display()
-                );
+                ));
             }
         }
     }
@@ -606,6 +700,7 @@ fn build_archive(
     sources: &[(PathBuf, String)],
     store: bool,
     appending: bool,
+    progress: &Progress,
 ) -> Result<Vec<Recorded>, String> {
     let method = if store {
         CompressionMethod::Stored
@@ -637,7 +732,8 @@ fn build_archive(
         .map_err(|e| format!("cannot stamp {}: {e}", part_path.display()))?;
     let mut recorded = Vec::with_capacity(sources.len());
 
-    for (path, name) in sources {
+    for (index, (path, name)) in sources.iter().enumerate() {
+        progress.file_progress(index, sources.len());
         let metadata =
             fs::metadata(path).map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
 

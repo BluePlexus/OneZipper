@@ -7,6 +7,7 @@ description = "Collapse folders of many small files into one zip each, so cloud 
 
 [dependencies]
 crc32fast = "1.5.0"
+indicatif = "0.18.6"
 time = { version = "0.3.55", features = ["local-offset"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate", "time"] }
 

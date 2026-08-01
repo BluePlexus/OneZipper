@@ -63,6 +63,10 @@ contract:
   user never made.
 - **`-list` writes paths to stdout and everything else to stderr**, so `-list > file` yields a file
   of nothing but paths. Any summary or diagnostic added to that path must go to stderr.
+- **The progress bar is stderr-only and gated on `io::stderr().is_terminal()`.** `Progress::new`
+  returns a no-op reporter when stderr is not a terminal, which is what keeps redirects, pipes, and
+  the whole test suite free of bar frames. `tests/progress.rs` asserts no `\x1b` or `\r` reaches
+  either stream when piped; removing the gate fails it.
 
 ## The delete-safety invariant
 
@@ -156,7 +160,12 @@ cargo test round_trip            # one test by name
 `tests/` drives the real binary via `CARGO_BIN_EXE_onezipper`; there is no library target to unit
 test against, and end-to-end is the right altitude for a tool whose contract is "what it does to a
 directory". Files are grouped by concern: `selection` (which folders qualify, CLI surface),
-`archive` (archiving, appending, delete-safety), `workflow` (`-list`/`-ignore`), `timestamps`.
+`archive` (archiving, appending, delete-safety), `workflow` (`-list`/`-ignore`), `timestamps`,
+`progress` (the bar staying out of piped output).
+
+Diagnostics inside `-zip` go through `Progress::note`, never `eprintln!` directly — a bare
+`eprintln!` while the bar is live gets overwritten by the next redraw. `note` prints above the bar
+when there is one and falls back to `eprintln!` when there is not.
 
 `tests/common/mod.rs` holds the `Tree` fixture. Every test builds its own tree in a `TempDir`, so
 tests are parallel-safe and nothing can touch a real path. Two traps it already guards:

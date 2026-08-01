@@ -168,7 +168,20 @@ that same folder, verified, and then deleted from disk. Entries are added in sor
 and stored flat — an archive contains filenames only, never paths, because only direct files are ever
 included.
 
-Per-folder failures are reported to stderr and do not stop the run:
+While the run proceeds, a progress bar on **stderr** reports folders completed, the folder currently
+being archived (relative to the scan root), and — for folders holding more than 50 files — how far
+into that folder the run has reached:
+
+```
+⠲ [00:00:04] [====================>   ] 5/6 folders  photos (1432/1500 files)
+```
+
+The bar is drawn only when stderr is a terminal. Piping or redirecting stderr disables it entirely,
+so no bar frames, carriage returns, or escape codes can reach a file or another program. The message
+is truncated to the terminal width rather than wrapping, so a deep path cannot break the display.
+
+Per-folder failures are reported to stderr and do not stop the run. They print above the bar, which
+redraws beneath them, so nothing is overwritten:
 
 ```
 skipped /Users/you/OneDrive/exports: exports.zip already contains 2 files with the same names; refusing to append and overwrite (report.csv, notes.txt)
