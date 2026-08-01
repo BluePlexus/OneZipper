@@ -59,6 +59,37 @@ Then apply:
 onezipper ~/OneDrive -n 50 -zip
 ```
 
+## Pause syncing before you run `-zip`
+
+**Quit or pause the OneDrive client first, and let it finish what it's doing.** This is the single
+most important operational step.
+
+OneZipper is safe against a moving tree — it will refuse a folder rather than lose a file — but a
+sync client actively writing into the folders being archived produces confusing, hard-to-predict
+outcomes:
+
+- **Files arriving mid-run are silently left out.** The candidate list is frozen before anything is
+  written, so a file that lands after the scan simply isn't in that archive. It stays loose and gets
+  picked up on a later run — correct, but not what the audit table led you to expect.
+- **Files disappearing mid-run give timing-dependent results.** If sync removes a file before
+  OneZipper reads it, that folder is aborted and left completely untouched. If it disappears after
+  being read into the archive, the run succeeds with a warning. Either way nothing is lost, but which
+  one you get depends on timing you can't see.
+- **A file rewritten while it's being read aborts the folder**, for the same reason — a changed
+  length mid-archive is treated as a reason to stop.
+- **Sync can undo the run.** Immediately after `-zip`, the client sees a large batch of deletions
+  plus one new file. If it was mid-upload it may restore files OneZipper just archived. Those
+  restored files then collide with entries already in the archive, and the next run refuses that
+  folder until you sort it out by hand.
+- **Partial or temporary files get archived.** A download still in flight is just a file on disk;
+  OneZipper has no way to know it is incomplete.
+
+If you use Files On-Demand, be aware that archiving reads every file, which forces online-only files
+to download first. A folder of cloud placeholders will pull its full contents before it can be
+archived.
+
+Run it when sync is idle, then let the client re-sync afterwards.
+
 ## Choosing which folders to leave alone
 
 `-list` and `-ignore` are built to work together. `-list` prints nothing but paths, so it redirects

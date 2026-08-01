@@ -14,6 +14,9 @@ leaving the tree's shape intact.
 It is designed to be run repeatedly against a live sync folder: the first run collapses what's
 there, and later runs fold newly-arrived files into the archive that already exists.
 
+**Pause syncing before running `-zip`.** Files arriving or vanishing mid-run make the outcome
+unpredictable even though no data is lost — see §7.1.
+
 ---
 
 ## 2. Command line
@@ -291,15 +294,43 @@ Additional guarantees:
 ### What is not protected
 
 - There is no undo. Recovery is `unzip`.
-- OneZipper does not coordinate with the OneDrive client. Run it when sync is idle; archiving files
-  mid-upload means the client sees deletions it is still working on.
 - A crash between steps 4 and 5 leaves the archive correct and some originals still on disk. The
   next run treats them as loose files and refuses the folder on the name collision, which is the
   safe outcome — no data is lost, and it is visible.
+- Concurrent modification of the tree is tolerated but not coordinated. See §7.1.
+
+### 7.1 Sync must be idle
+
+**Pause or quit the OneDrive client before running `-zip`, and let it finish its current work
+first.** OneZipper does not coordinate with any sync client, and has no way to.
+
+The safety invariant still holds under concurrent modification — no file is lost — but the *outcome*
+becomes unpredictable in ways the audit table cannot warn you about:
+
+| What sync does | What happens |
+| --- | --- |
+| Adds a file after the scan, before that folder is archived | The file is not in the frozen candidate list, so it is not archived. It stays loose and is picked up by a later run. The archive contains fewer files than the audit reported. |
+| Deletes or moves a file after the scan, before that file is read | Reading it fails, so the whole folder is aborted and left untouched — no archive is written. Reported as a skip, exit code 1. |
+| Deletes or moves a file after it has been read into the archive | The archive is complete and valid; the deletion loop just finds the file already gone and warns. The run succeeds. |
+| Rewrites a file while it is being read | The length no longer matches what was measured, so the folder is aborted. Nothing in it is deleted. |
+| Is mid-upload when the run finishes | The client sees a batch of deletions plus one new file and may restore files that were just archived. Those restored files then collide with entries already inside the archive, and the next run refuses that folder until resolved by hand. |
+| Is mid-download when the run starts | A partially-downloaded file is just a file on disk. OneZipper cannot tell it is incomplete and will archive it as-is. |
+
+The last two are the ones that actually cost time: neither loses data, but both leave a folder in a
+state requiring manual attention.
+
+**Files On-Demand.** Archiving reads every byte of every file, which forces online-only placeholders
+to hydrate. Pointing `-zip` at a folder of cloud-only files downloads its entire contents first —
+expect the run to take as long as that download, and to consume the corresponding local disk space.
+
+Sequence a run as: let sync settle → pause or quit the client → `-list` or audit → `-zip` → resume
+the client and let it upload the archives.
 
 ---
 
 ## 8. Usage examples
+
+> **Before any `-zip` example below:** pause or quit the OneDrive client and let it settle. See §7.1.
 
 ### Survey before touching anything
 

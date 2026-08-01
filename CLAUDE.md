@@ -120,6 +120,21 @@ data would be gone for good.
 entry. Appending would shadow an entry whose original is already deleted, making it unrecoverable.
 Refusing is the intended behavior here, not a limitation to fix.
 
+## Concurrent modification
+
+The tool tolerates a moving tree but does not coordinate with any sync client, and the docs tell
+users to pause syncing before `-zip` ([OneZipper.md](OneZipper.md) §7.1). The tolerance comes from
+three existing behaviors, all of which are load-bearing: the frozen candidate list means a late
+arrival is simply not archived; a file that vanishes before it is read fails its `fs::metadata` or
+`File::open` and aborts the folder; a file whose length changed aborts the folder. Each degrades to
+"that folder is skipped", never to data loss. Preserve that property — a change making the tool press
+on through a failed read or a changed length would trade a skipped folder for a corrupt archive.
+
+Note there are two distinct windows for a vanishing file, and both are tested: before its read the
+folder aborts with nothing written, while after its read the archive is already valid and the
+deletion loop merely warns. Do not "tidy" that warning into a hard failure — at that point the data
+is safely in the archive and the run is legitimately a success.
+
 ## Timestamps
 
 Entry timestamps use the UTC offset in effect *at the file's own mtime*
