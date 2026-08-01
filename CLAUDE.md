@@ -49,11 +49,20 @@ contract:
 - **Symlinks are never followed and never archived.** `DirEntry::file_type` does not traverse, so a
   symlink is neither counted as a file nor descended into.
 - **Hidden/system entries are skipped by default**, including descent into dot-directories, so a
-  default run cannot damage a `.git` folder. `--include-hidden` opts back in.
+  default run cannot damage a `.git` folder. `-include-hidden` opts back in.
 - **A `<name>.zip` we wrote is invisible to the walk**, but only if it carries our marker (see
   below). `collect` excludes it, which keeps the audit count equal to the number of files actually
   archived and stops a zip nesting inside itself. An unmarked `<name>.zip` stays visible and is
   treated as ordinary content.
+- **Every option takes a single dash**, long ones included (`-list`, `-ignore`, `-include-hidden`).
+  Do not "modernize" these to `--`. Double-dashed spellings of known options are rejected with a
+  message naming the single-dash form.
+- **`-ignore` matches exact folders, not subtrees.** Ignoring `photos` still archives
+  `photos/thumbnails`. This is what makes the `-list` → edit → `-ignore` round trip work: every line
+  `-list` emits is one independent decision. Making it recursive would silently discard decisions the
+  user never made.
+- **`-list` writes paths to stdout and everything else to stderr**, so `-list > file` yields a file
+  of nothing but paths. Any summary or diagnostic added to that path must go to stderr.
 
 ## The delete-safety invariant
 

@@ -36,8 +36,12 @@ struct Config {
     root: PathBuf,
     threshold: usize,
     do_zip: bool,
+    list: bool,
     store: bool,
     include_hidden: bool,
+    /// Folders to leave alone entirely, from `-ignore`. Canonicalized where
+    /// possible so they compare equal to the paths produced by the walk.
+    ignored: HashSet<PathBuf>,
 }
 
 /// A folder that qualifies, plus the direct files that would go into its archive.
@@ -73,35 +77,71 @@ fn main() -> ExitCode {
         eprintln!("warning: {err}");
     }
 
-    if cfg.do_zip {
-        run_zip(&candidates, &cfg)
+    // Ignoring happens after selection so the count reported is the number of
+    // folders that would otherwise have been archived.
+    let ignored_count = candidates.len();
+    candidates.retain(|c| !cfg.ignored.contains(&c.dir));
+    let ignored_count = ignored_count - candidates.len();
+
+    if cfg.list {
+        run_list(&candidates, ignored_count)
+    } else if cfg.do_zip {
+        run_zip(&candidates, &cfg, ignored_count)
     } else {
-        run_audit(&candidates, &cfg)
+        run_audit(&candidates, &cfg, ignored_count)
     }
 }
 
 fn usage() -> String {
-    r#"usage: onezipper [PATH] -n COUNT [-zip] [--store] [--include-hidden]
+    r#"usage: onezipper [PATH] -n COUNT [-zip] [-list] [-ignore FILE]
+                 [-store] [-include-hidden]
 
-PATH             folder to scan recursively (default: current directory)
--n COUNT         a folder qualifies when it holds MORE THAN COUNT direct
-                 files; COUNT must be > 1
--zip             actually create the archives and delete the originals;
-                 without it, onezipper only prints an audit table
---store          store files uncompressed (fast; for already-compressed
-                 media such as jpg/mp4)
---include-hidden archive dotfiles, .DS_Store and Thumbs.db too, and descend
-                 into hidden folders. Off by default: a default run leaves
-                 .git and other dot-directories completely untouched."#
+PATH            folder to scan recursively (default: current directory)
+-n COUNT        a folder qualifies when it holds MORE THAN COUNT direct
+                files; COUNT must be > 1
+-zip            actually create the archives and delete the originals;
+                without it, onezipper only prints an audit table
+-list           print just the qualifying folder paths, one per line and
+                nothing else, for redirecting to a file. Cannot be
+                combined with -zip
+-ignore FILE    skip every folder listed in FILE, one path per line.
+                Blank lines and lines starting with # are ignored
+-store          store files uncompressed (fast; for already-compressed
+                media such as jpg/mp4)
+-include-hidden archive dotfiles, .DS_Store and Thumbs.db too, and descend
+                into hidden folders. Off by default: a default run leaves
+                .git and other dot-directories completely untouched.
+-h, -help       print this message
+
+To build an ignore list, capture the candidates, delete the lines you DO
+want archived, and pass what remains back in:
+
+    onezipper ~/OneDrive -n 50 -list > keep.txt
+    onezipper ~/OneDrive -n 50 -ignore keep.txt -zip"#
         .to_string()
 }
+
+/// Every option name, without its dash. Used only to give a precise error when
+/// one is spelled with two dashes.
+const FLAGS: &[&str] = &[
+    "n",
+    "zip",
+    "list",
+    "ignore",
+    "store",
+    "include-hidden",
+    "h",
+    "help",
+];
 
 fn parse_args() -> Result<Config, String> {
     let mut root: Option<PathBuf> = None;
     let mut threshold: Option<usize> = None;
     let mut do_zip = false;
+    let mut list = false;
     let mut store = false;
     let mut include_hidden = false;
+    let mut ignore_file: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -117,13 +157,26 @@ fn parse_args() -> Result<Config, String> {
                 threshold = Some(value);
             }
             "-zip" => do_zip = true,
-            "--store" => store = true,
-            "--include-hidden" => include_hidden = true,
-            "-h" | "--help" => {
+            "-list" => list = true,
+            "-ignore" => {
+                let raw = args.next().ok_or("-ignore requires a file")?;
+                ignore_file = Some(PathBuf::from(raw));
+            }
+            "-store" => store = true,
+            "-include-hidden" => include_hidden = true,
+            "-h" | "-help" | "--help" => {
                 println!("{}", usage());
                 std::process::exit(0);
             }
             other if other.starts_with('-') => {
+                // Every flag here takes a single dash; a double-dashed spelling
+                // is a common enough reflex to be worth naming precisely.
+                let single = other.trim_start_matches('-');
+                if FLAGS.contains(&single) {
+                    return Err(format!(
+                        "unknown option {other:?} (options take a single dash: -{single})"
+                    ));
+                }
                 return Err(format!("unknown option {other:?}"));
             }
             other => {
@@ -135,6 +188,12 @@ fn parse_args() -> Result<Config, String> {
         }
     }
 
+    // -list exists to produce a clean file of paths; letting it also delete
+    // things would make a reporting flag destructive.
+    if list && do_zip {
+        return Err("-list and -zip cannot be combined".to_string());
+    }
+
     let root = root.unwrap_or_else(|| PathBuf::from("."));
     let root = fs::canonicalize(&root)
         .map_err(|e| format!("cannot resolve path {}: {e}", root.display()))?;
@@ -142,13 +201,47 @@ fn parse_args() -> Result<Config, String> {
         return Err(format!("{} is not a directory", root.display()));
     }
 
+    let ignored = match &ignore_file {
+        Some(path) => read_ignore_file(path)?,
+        None => HashSet::new(),
+    };
+
     Ok(Config {
         root,
         threshold: threshold.ok_or("-n is required")?,
         do_zip,
+        list,
         store,
         include_hidden,
+        ignored,
     })
+}
+
+/// Loads the folder list for `-ignore`: one path per line, blank lines and
+/// `#` comments skipped.
+///
+/// Paths are canonicalized so they compare equal to the ones the walk produces
+/// regardless of how they were written — relative, trailing slash, or through a
+/// symlink. An entry that cannot be resolved is kept verbatim rather than
+/// rejected: a list curated from an earlier run may name folders that have since
+/// been moved or deleted, and that should not stop the whole run.
+fn read_ignore_file(path: &Path) -> Result<HashSet<PathBuf>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read ignore file {}: {e}", path.display()))?;
+
+    let mut ignored = HashSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let entry = PathBuf::from(line);
+        match fs::canonicalize(&entry) {
+            Ok(resolved) => ignored.insert(resolved),
+            Err(_) => ignored.insert(entry),
+        };
+    }
+    Ok(ignored)
 }
 
 /// Hidden and OS-generated entries are left alone by default: sweeping a `.git`
@@ -241,12 +334,39 @@ fn collect(dir: &Path, cfg: &Config, out: &mut Vec<Candidate>, errors: &mut Vec<
     }
 }
 
-fn run_audit(candidates: &[Candidate], cfg: &Config) -> ExitCode {
+/// Prints nothing but the qualifying folder paths, so stdout can be redirected
+/// straight into a file and edited into an `-ignore` list. Everything else goes
+/// to stderr, which keeps the redirected file clean while still telling an
+/// interactive user what happened.
+fn run_list(candidates: &[Candidate], ignored_count: usize) -> ExitCode {
+    for candidate in candidates {
+        println!("{}", candidate.dir.display());
+    }
+    eprintln!(
+        "{} folder(s) listed{}.",
+        candidates.len(),
+        ignore_note(ignored_count)
+    );
+    ExitCode::SUCCESS
+}
+
+fn ignore_note(ignored_count: usize) -> String {
+    match ignored_count {
+        0 => String::new(),
+        n => format!(", {n} skipped by -ignore"),
+    }
+}
+
+fn run_audit(candidates: &[Candidate], cfg: &Config, ignored_count: usize) -> ExitCode {
     if candidates.is_empty() {
         println!(
-            "No folder under {} holds more than {} files.",
+            "No folder under {} holds more than {} files{}.",
             cfg.root.display(),
-            cfg.threshold
+            cfg.threshold,
+            match ignored_count {
+                0 => String::new(),
+                n => format!(" ({n} skipped by -ignore)"),
+            }
         );
         return ExitCode::SUCCESS;
     }
@@ -258,14 +378,15 @@ fn run_audit(candidates: &[Candidate], cfg: &Config) -> ExitCode {
         total += candidate.files.len();
     }
     println!(
-        "\n{} folder(s), {} file(s) would be archived. Re-run with -zip to apply.",
+        "\n{} folder(s), {} file(s) would be archived{}. Re-run with -zip to apply.",
         candidates.len(),
-        total
+        total,
+        ignore_note(ignored_count)
     );
     ExitCode::SUCCESS
 }
 
-fn run_zip(candidates: &[Candidate], cfg: &Config) -> ExitCode {
+fn run_zip(candidates: &[Candidate], cfg: &Config, ignored_count: usize) -> ExitCode {
     let mut archived_folders = 0usize;
     let mut archived_files = 0usize;
     let mut failures = 0usize;
@@ -283,7 +404,10 @@ fn run_zip(candidates: &[Candidate], cfg: &Config) -> ExitCode {
         }
     }
 
-    println!("Archived {archived_files} file(s) into {archived_folders} zip(s).");
+    println!(
+        "Archived {archived_files} file(s) into {archived_folders} zip(s){}.",
+        ignore_note(ignored_count)
+    );
     if failures > 0 {
         eprintln!("{failures} folder(s) were left untouched; see the messages above.");
         return ExitCode::FAILURE;

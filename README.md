@@ -23,16 +23,20 @@ The binary lands at `target/release/onezipper`.
 ## Usage
 
 ```
-onezipper [PATH] -n COUNT [-zip] [--store] [--include-hidden]
+onezipper [PATH] -n COUNT [-zip] [-list] [-ignore FILE] [-store] [-include-hidden]
 ```
+
+Every option takes a single dash.
 
 | Argument | Meaning |
 | --- | --- |
 | `PATH` | Folder to scan recursively. Defaults to the current directory. |
 | `-n COUNT` | A folder qualifies when it holds **more than** `COUNT` files directly. Must be > 1. |
 | `-zip` | Actually create archives and delete originals. Without it, OneZipper only audits. |
-| `--store` | Skip compression. Faster, and worth it when the files are already compressed (jpg, mp4). |
-| `--include-hidden` | Archive dotfiles, `.DS_Store`, and `Thumbs.db` too, and descend into hidden folders. Off by default. |
+| `-list` | Print just the qualifying folder paths, one per line, for redirecting to a file. Cannot be combined with `-zip`. |
+| `-ignore FILE` | Skip every folder listed in `FILE`. |
+| `-store` | Skip compression. Faster, and worth it when the files are already compressed (jpg, mp4). |
+| `-include-hidden` | Archive dotfiles, `.DS_Store`, and `Thumbs.db` too, and descend into hidden folders. Off by default. |
 
 Audit first — this is the default and it touches nothing:
 
@@ -55,6 +59,38 @@ Then apply:
 onezipper ~/OneDrive -n 50 -zip
 ```
 
+## Choosing which folders to leave alone
+
+`-list` and `-ignore` are built to work together. `-list` prints nothing but paths, so it redirects
+cleanly into a file you then edit by hand:
+
+```bash
+onezipper ~/OneDrive -n 50 -list > keep.txt
+```
+
+Open `keep.txt` and **delete the lines you do want archived**. What's left is the list of folders to
+leave untouched — pass it back in:
+
+```bash
+onezipper ~/OneDrive -n 50 -ignore keep.txt        # check
+onezipper ~/OneDrive -n 50 -ignore keep.txt -zip   # apply
+```
+
+Keep that file around and reuse it on every subsequent run; new folders that appear later will show
+up in the audit while everything on the list stays untouched.
+
+The file format is one path per line. Blank lines are skipped, as are lines starting with `#`, so you
+can annotate the list or comment entries out instead of deleting them. Paths may be absolute or
+relative, with or without a trailing slash. An entry naming a folder that no longer exists is
+ignored rather than treated as an error, so a list can outlive the folders it was built from.
+
+**Ignoring a folder does not ignore its subfolders.** Each folder is listed and judged separately, so
+ignoring `photos` still archives `photos/thumbnails` unless that is on the list too. This is what
+makes the round trip work — every line `-list` emits is a decision you can make independently.
+
+`-list` respects `-ignore`, so you can re-run it to see what's still outstanding as you narrow the
+list down.
+
 ## How folders are chosen
 
 Only files sitting **directly** in a folder count toward `-n`, and only those files go into its
@@ -65,7 +101,7 @@ named after that folder.
 A folder holding exactly `-n` files is left alone — the threshold is "exceeds".
 
 Hidden and OS-generated entries are skipped by default: dotfiles, `.DS_Store`, `Thumbs.db`, and
-anything inside a dot-directory. A default run will not touch a `.git` folder. `--include-hidden`
+anything inside a dot-directory. A default run will not touch a `.git` folder. `-include-hidden`
 turns that off.
 
 ## Running it again

@@ -19,8 +19,8 @@ there, and later runs fold newly-arrived files into the archive that already exi
 ## 2. Command line
 
 ```
-onezipper [PATH] -n COUNT [-zip] [--store] [--include-hidden]
-onezipper -h | --help
+onezipper [PATH] -n COUNT [-zip] [-list] [-ignore FILE] [-store] [-include-hidden]
+onezipper -h | -help
 ```
 
 | Argument | Required | Default | Meaning |
@@ -28,16 +28,21 @@ onezipper -h | --help
 | `PATH` | no | current directory | Root of the recursive scan. Must be an existing directory. |
 | `-n COUNT` | **yes** | — | Threshold. A folder qualifies when its loose file count is **strictly greater** than `COUNT`. Must be an integer > 1. |
 | `-zip` | no | off | Perform the work. Without it, OneZipper only prints the audit table and changes nothing. |
-| `--store` | no | off | Write entries uncompressed. |
-| `--include-hidden` | no | off | Include hidden and OS-generated entries, and descend into hidden directories. |
-| `-h`, `--help` | no | — | Print usage and exit 0. |
+| `-list` | no | off | Print only the qualifying folder paths to stdout, one per line. Mutually exclusive with `-zip`. |
+| `-ignore FILE` | no | — | Skip every folder named in `FILE`. See §4.3. |
+| `-store` | no | off | Write entries uncompressed. |
+| `-include-hidden` | no | off | Include hidden and OS-generated entries, and descend into hidden directories. |
+| `-h`, `-help` | no | — | Print usage and exit 0. |
 
 Notes on parsing:
 
+- **Every option takes a single dash**, including the long ones. A double-dashed spelling of a known
+  option is rejected with a message naming the correct form rather than being silently ignored.
 - `PATH` may appear before or after the flags. A second positional argument is an error.
-- `PATH` is canonicalized, so the audit table always shows absolute, symlink-resolved paths.
+- `PATH` is canonicalized, so output always shows absolute, symlink-resolved paths.
 - An unrecognized `-`-prefixed argument is an error; it is never treated as a path.
-- `-zip` is spelled with a single dash by design.
+- `-list` with `-zip` is rejected. `-list` exists to produce a file for review, and a reporting flag
+  that could also delete things would be a trap.
 
 ### Exit codes
 
@@ -56,7 +61,7 @@ Every directory at or below `PATH` is examined independently, including `PATH` i
 **Loose files** of a directory are the entries directly inside it that are all of:
 
 - a regular file (not a directory, not a symlink — `file_type` is checked without following links);
-- not hidden or OS-generated, unless `--include-hidden` is given. Hidden means a leading `.`, plus
+- not hidden or OS-generated, unless `-include-hidden` is given. Hidden means a leading `.`, plus
   `Thumbs.db`;
 - not the directory's own OneZipper archive (see §5).
 
@@ -81,7 +86,7 @@ created during a run can never be picked up as input to the same run.
 
 ## 4. What a run does
 
-### Audit mode (default)
+### 4.1 Audit mode (default)
 
 Prints one row per qualifying folder: the file count right-justified in an 8-character column, two
 spaces, then the absolute path.
@@ -103,7 +108,57 @@ No folder under /Users/you/OneDrive holds more than 50 files.
 
 The counts shown are exactly the counts that `-zip` will archive.
 
-### Zip mode (`-zip`)
+### 4.2 List mode (`-list`)
+
+Prints the qualifying folder paths and nothing else — no header, no counts, no summary — one per
+line, in the same order as the audit table:
+
+```
+/Users/you/OneDrive/photos
+/Users/you/OneDrive/photos/thumbnails
+/Users/you/OneDrive/exports
+```
+
+The summary line goes to **stderr**, not stdout, so redirecting stdout produces a file containing
+only paths while an interactive user still sees what happened:
+
+```console
+$ onezipper ~/OneDrive -n 50 -list > keep.txt
+3 folder(s) listed.
+```
+
+`-list` never modifies anything and cannot be combined with `-zip`.
+
+### 4.3 Ignoring folders (`-ignore FILE`)
+
+Every folder named in `FILE` is dropped from the candidate list and left completely alone.
+
+The file format is one path per line. Blank lines are skipped, and so are lines whose first
+non-whitespace character is `#`, which allows both annotations and commenting an entry out instead of
+deleting it. (A folder whose name genuinely begins with `#` therefore cannot be listed — an
+acceptable trade for a file meant to be hand-edited.)
+
+Paths are resolved the same way any path argument is, so an entry may be absolute or relative, carry
+a trailing slash, or run through a symlink, and it will still match. An entry that cannot be resolved
+— typically a folder that has since been moved or deleted — is kept as written and simply matches
+nothing; it is not an error, so a curated list can outlive the tree it was built from.
+
+**Matching is exact and per-folder: ignoring a folder does not ignore anything beneath it.** Ignoring
+`photos` still archives `photos/thumbnails` unless that path is also listed. This is deliberate and
+is what makes the `-list` → edit → `-ignore` round trip coherent — every line `-list` emits
+corresponds to one independent decision.
+
+Ignoring is applied *after* threshold selection, so the reported count is the number of folders that
+would otherwise have been archived. All three modes append a note when anything was skipped:
+
+```
+2 folder(s), 12 file(s) would be archived, 2 skipped by -ignore. Re-run with -zip to apply.
+```
+
+`-list` honours `-ignore` too, so re-running it shows what is still outstanding as the list is
+narrowed down.
+
+### 4.4 Zip mode (`-zip`)
 
 For each qualifying folder, in path order: all loose files are written into `<foldername>.zip` inside
 that same folder, verified, and then deleted from disk. Entries are added in sorted filename order
@@ -118,7 +173,7 @@ Archived 5900 file(s) into 2 zip(s).
 1 folder(s) were left untouched; see the messages above.
 ```
 
-### Preserved metadata
+### 4.5 Preserved metadata
 
 - **Modification times**, converted to the local-time form the zip format requires, using the UTC
   offset in effect at each file's own timestamp — so files written on either side of a
@@ -260,6 +315,44 @@ Audit mode is the default precisely so that the destructive form has to be typed
 onezipper ~/OneDrive -n 50 -zip
 ```
 
+### Curate an exclusion list, then reuse it
+
+The intended workflow for a tree where some folders should never be touched. Capture the candidates:
+
+```bash
+onezipper ~/OneDrive -n 50 -list > keep.txt
+```
+
+Edit `keep.txt` and **delete the lines you do want archived**. What remains is the keep-out list:
+
+```bash
+onezipper ~/OneDrive -n 50 -ignore keep.txt        # confirm what's left
+onezipper ~/OneDrive -n 50 -ignore keep.txt -zip   # apply
+```
+
+Keep `keep.txt` and pass it to every future run. Folders that appear later are not on it, so they
+show up in the audit normally while the listed ones stay untouched.
+
+To see what is still outstanding while narrowing the list down, `-list` honours `-ignore`:
+
+```bash
+onezipper ~/OneDrive -n 50 -ignore keep.txt -list
+```
+
+### Ignore list built by hand
+
+Nothing requires the file to come from `-list`. Comments and blank lines make a hand-written list
+readable:
+
+```
+# active projects — leave these browsable
+/Users/you/OneDrive/work/current-client
+/Users/you/OneDrive/work/proposals
+
+# already archived by other means
+/Users/you/OneDrive/backups/2024
+```
+
 ### Only collapse genuinely extreme folders
 
 ```bash
@@ -272,10 +365,10 @@ hurting sync.
 ### A photo or video library
 
 ```bash
-onezipper ~/OneDrive/Photos -n 200 --store -zip
+onezipper ~/OneDrive/Photos -n 200 -store -zip
 ```
 
-JPEGs and MP4s are already compressed; `--store` skips deflate for a much faster run at essentially
+JPEGs and MP4s are already compressed; `-store` skips deflate for a much faster run at essentially
 the same archive size.
 
 ### Scan the current directory
@@ -288,7 +381,7 @@ onezipper -n 100
 ### Include dotfiles
 
 ```bash
-onezipper ~/OneDrive/config-backups -n 20 --include-hidden -zip
+onezipper ~/OneDrive/config-backups -n 20 -include-hidden -zip
 ```
 
 Only do this where you know there is no `.git` directory or other dot-directory whose internals
