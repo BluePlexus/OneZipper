@@ -42,9 +42,9 @@ onezipper ~/OneDrive -n 50
 
 ```
    FILES  FOLDER
-    5000  /Users/daniel/OneDrive/photos
-     900  /Users/daniel/OneDrive/photos/thumbnails
-      73  /Users/daniel/OneDrive/exports
+    5000  /Users/you/OneDrive/photos
+     900  /Users/you/OneDrive/photos/thumbnails
+      73  /Users/you/OneDrive/exports
 
 3 folder(s), 5973 file(s) would be archived. Re-run with -zip to apply.
 ```
@@ -142,3 +142,7 @@ place. Modification times and Unix permissions are preserved in the archive.
 
 [OneZipper.md](OneZipper.md) is the full specification — exact selection rules, the execution model,
 exit codes, and worked examples including the recurring-sync workflow.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

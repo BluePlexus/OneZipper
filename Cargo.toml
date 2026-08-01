@@ -2,6 +2,8 @@
 name = "onezipper"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Collapse folders of many small files into one zip each, so cloud sync uploads one large file instead of thousands of tiny ones."
 
 [dependencies]
 crc32fast = "1.5.0"

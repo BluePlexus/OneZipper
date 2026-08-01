@@ -88,9 +88,9 @@ spaces, then the absolute path.
 
 ```
    FILES  FOLDER
-    5000  /Users/daniel/OneDrive/photos
-     900  /Users/daniel/OneDrive/photos/thumbnails
-      73  /Users/daniel/OneDrive/exports
+    5000  /Users/you/OneDrive/photos
+     900  /Users/you/OneDrive/photos/thumbnails
+      73  /Users/you/OneDrive/exports
 
 3 folder(s), 5973 file(s) would be archived. Re-run with -zip to apply.
 ```
@@ -98,7 +98,7 @@ spaces, then the absolute path.
 When nothing qualifies:
 
 ```
-No folder under /Users/daniel/OneDrive holds more than 50 files.
+No folder under /Users/you/OneDrive holds more than 50 files.
 ```
 
 The counts shown are exactly the counts that `-zip` will archive.
@@ -113,7 +113,7 @@ included.
 Per-folder failures are reported to stderr and do not stop the run:
 
 ```
-skipped /Users/daniel/OneDrive/exports: exports.zip already contains 2 files with the same names; refusing to append and overwrite (report.csv, notes.txt)
+skipped /Users/you/OneDrive/exports: exports.zip already contains 2 files with the same names; refusing to append and overwrite (report.csv, notes.txt)
 Archived 5900 file(s) into 2 zip(s).
 1 folder(s) were left untouched; see the messages above.
 ```
